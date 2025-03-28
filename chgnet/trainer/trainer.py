@@ -64,6 +64,7 @@ class Trainer:
         wandb_path: str | None = None,
         wandb_init_kwargs: dict | None = None,
         extra_run_config: dict | None = None,
+        is_lora: bool = False,
         **kwargs,
     ) -> None:
         """Initialize all hyper-parameters for trainer.
@@ -121,6 +122,7 @@ class Trainer:
             ValueError: If wandb_path is specified but not in the format
                 'project/run_name'
         """
+        self.is_lora = is_lora
         # Store trainer args for reproducibility
         self.trainer_args = {
             k: v
@@ -290,6 +292,8 @@ class Trainer:
         global best_checkpoint  # noqa: PLW0603
         if save_dir is None:
             save_dir = f"{datetime.datetime.now(tz=datetime.timezone.utc):%m-%d-%Y}"
+            if self.is_lora:
+                save_dir += "_lora"
 
         print(f"Begin Training: using {self.device} device")
         print(f"training targets: {self.targets}")
@@ -336,12 +340,26 @@ class Trainer:
         if test_loader is not None:
             # test best model
             print("---------Evaluate Model on Test Set---------------")
-            for file in os.listdir(save_dir):
-                if file.startswith("bestE_"):
-                    test_file = file
-                    best_checkpoint = torch.load(os.path.join(save_dir, test_file))
+            test_file = None
+            if self.is_lora:
+                for item in os.listdir(save_dir):
+                    if item.startswith("bestE_") and os.path.isdir(
+                        os.path.join(save_dir, item)
+                    ):
+                        from peft import PeftModel
 
-            self.model.load_state_dict(best_checkpoint["model"]["state_dict"])
+                        test_file = item
+                        chgnet = CHGNet.load()
+                        self.model = PeftModel.from_pretrained(
+                            chgnet, os.path.join(save_dir, item)
+                        )
+            else:
+                for file in os.listdir(save_dir):
+                    if file.startswith("bestE_"):
+                        test_file = file
+                        best_checkpoint = torch.load(os.path.join(save_dir, test_file))
+
+                self.model.load_state_dict(best_checkpoint["model"]["state_dict"])
             test_mae = self._validate(
                 test_loader,
                 is_test=True,
@@ -350,6 +368,7 @@ class Trainer:
 
             for key in self.targets:
                 self.training_history[key]["test"] = test_mae[key]
+            assert test_file is not None
             self.save(filename=os.path.join(save_dir, test_file))
 
             # Log test metrics to wandb
@@ -613,14 +632,17 @@ class Trainer:
 
     def save(self, filename: str = "training_result.pth.tar") -> None:
         """Save the model, graph_converter, etc."""
-        state = {
-            "model": self.model.as_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
-            "training_history": self.training_history,
-            "trainer_args": self.trainer_args,
-        }
-        torch.save(state, filename)
+        if self.is_lora:
+            self.model.save_pretrained(filename)
+        else:
+            state = {
+                "model": self.model.as_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "scheduler": self.scheduler.state_dict(),
+                "training_history": self.training_history,
+                "trainer_args": self.trainer_args,
+            }
+            torch.save(state, filename)
 
     def save_checkpoint(self, epoch: int, mae_error: dict, save_dir: str) -> None:
         """Function to save CHGNet trained weights after each epoch.
@@ -634,13 +656,19 @@ class Trainer:
 
         for fname in os.listdir(save_dir):
             if fname.startswith("epoch"):
-                os.remove(os.path.join(save_dir, fname))
+                if self.is_lora:
+                    shutil.rmtree(os.path.join(save_dir, fname))
+                else:
+                    os.remove(os.path.join(save_dir, fname))
 
         err_str = "_".join(
             f"{key}{f'{mae_error[key] * 1000:.0f}' if key in mae_error else 'NA'}"
             for key in "efsm"
         )
-        filename = os.path.join(save_dir, f"epoch{epoch}_{err_str}.pth.tar")
+        if self.is_lora:
+            filename = os.path.join(save_dir, f"epoch{epoch}_{err_str}")
+        else:
+            filename = os.path.join(save_dir, f"epoch{epoch}_{err_str}.pth.tar")
         self.save(filename=filename)
 
         # save the model if it has minimal val energy error or val force error
@@ -648,21 +676,38 @@ class Trainer:
             self.best_model = self.model
             for fname in os.listdir(save_dir):
                 if fname.startswith("bestE"):
-                    os.remove(os.path.join(save_dir, fname))
-            shutil.copyfile(
-                filename,
-                os.path.join(save_dir, f"bestE_epoch{epoch}_{err_str}.pth.tar"),
-            )
+                    if self.is_lora:
+                        shutil.rmtree(os.path.join(save_dir, fname))
+                    else:
+                        os.remove(os.path.join(save_dir, fname))
+
+            if self.is_lora:
+                shutil.copytree(
+                    filename, os.path.join(save_dir, f"bestE_epoch{epoch}_{err_str}")
+                )
+            else:
+                shutil.copyfile(
+                    filename,
+                    os.path.join(save_dir, f"bestE_epoch{epoch}_{err_str}.pth.tar"),
+                )
         if "f" in self.targets and mae_error["f"] == min(
             self.training_history["f"]["val"]
         ):
             for fname in os.listdir(save_dir):
                 if fname.startswith("bestF"):
-                    os.remove(os.path.join(save_dir, fname))
-            shutil.copyfile(
-                filename,
-                os.path.join(save_dir, f"bestF_epoch{epoch}_{err_str}.pth.tar"),
-            )
+                    if self.is_lora:
+                        shutil.rmtree(os.path.join(save_dir, fname))
+                    else:
+                        os.remove(os.path.join(save_dir, fname))
+            if self.is_lora:
+                shutil.copytree(
+                    filename, os.path.join(save_dir, f"bestF_epoch{epoch}_{err_str}")
+                )
+            else:
+                shutil.copyfile(
+                    filename,
+                    os.path.join(save_dir, f"bestF_epoch{epoch}_{err_str}.pth.tar"),
+                )
 
     @classmethod
     def load(cls, path: str) -> Self:
