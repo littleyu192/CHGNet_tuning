@@ -56,8 +56,12 @@ trainer = Trainer(
 )
 
 trainer.train(train_loader, val_loader, test_loader, train_composition_model=True)
+# model = trainer.model
+# best_model = trainer.best_model  # best model based on validation energy MAE
 
-model = trainer.model
-best_model = trainer.best_model  # best model based on validation energy MAE
+# Out of box prediction:
+# trainer._validate(train_loader, is_test=True, test_result_save_path="./out_of_box_prediction/result_traindataset")
+# trainer._validate(val_loader, is_test=True, test_result_save_path="./out_of_box_prediction/result_validdataset")
+# trainer._validate(test_loader, is_test=True, test_result_save_path="./out_of_box_prediction/result_testdataset")
 
 
