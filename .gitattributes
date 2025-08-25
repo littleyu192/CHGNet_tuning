@@ -1,0 +1,1 @@
+my_vasp_calc_dir/chgnet_dataset.json filter=lfs diff=lfs merge=lfs -text
